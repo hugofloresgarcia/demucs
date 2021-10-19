@@ -141,9 +141,9 @@ class AudioFile:
         return wav
 
 
-def convert_audio_channels(wav, channels=2):
+def convert_audio_channels(wav: torch.Tensor, channels: int = 2):
     """Convert audio to the given number of channels."""
-    *shape, src_channels, length = wav.shape
+    src_channels, length = wav.shape
     if src_channels == channels:
         pass
     elif channels == 1:
@@ -155,7 +155,7 @@ def convert_audio_channels(wav, channels=2):
         # Case 2:
         # The caller asked for multiple channels, but the input file have
         # one single channel, replicate the audio over all channels.
-        wav = wav.expand(*shape, channels, length)
+        wav = wav.expand(channels, length)
     elif src_channels >= channels:
         # Case 3:
         # The caller asked for multiple channels, and the input file have

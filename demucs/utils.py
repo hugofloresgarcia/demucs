@@ -16,6 +16,7 @@ import tempfile
 import warnings
 import zlib
 from contextlib import contextmanager
+from typing import Union
 
 from diffq import UniformQuantizer, DiffQuantizer
 import torch as th
@@ -24,14 +25,30 @@ from torch import distributed
 from torch.nn import functional as F
 
 
-def center_trim(tensor, reference):
+def center_trim(tensor, reference: int):
     """
     Center trim `tensor` with respect to `reference`, along the last dimension.
     `reference` can also be a number, representing the length to trim to.
     If the size difference != 0 mod 2, the extra sample is removed on the right side.
     """
-    if hasattr(reference, "size"):
-        reference = reference.size(-1)
+    # if hasattr(reference, "size"):
+    #     reference = reference.size(-1)
+    assert isinstance(reference, int)
+    delta = tensor.size(-1) - reference
+    if delta < 0:
+        raise ValueError("tensor must be larger than reference. " f"Delta is {delta}.")
+    if delta:
+        tensor = tensor[..., delta // 2:-(delta - delta // 2)]
+    return tensor
+
+def center_trim_tensor(tensor, reference: th.Tensor):
+    """
+    Center trim `tensor` with respect to `reference`, along the last dimension.
+    `reference` can also be a number, representing the length to trim to.
+    If the size difference != 0 mod 2, the extra sample is removed on the right side.
+    """
+    assert isinstance(reference, th.Tensor)
+    reference = reference.size(-1)
     delta = tensor.size(-1) - reference
     if delta < 0:
         raise ValueError("tensor must be larger than reference. " f"Delta is {delta}.")
@@ -97,7 +114,7 @@ def human_seconds(seconds, display='.2f'):
 
 
 class TensorChunk:
-    def __init__(self, tensor, offset=0, length=None):
+    def __init__(self, tensor, offset: int = 0, length: Union[int, None] = None):
         total_length = tensor.shape[-1]
         assert offset >= 0
         assert offset < total_length
@@ -118,7 +135,7 @@ class TensorChunk:
         shape[-1] = self.length
         return shape
 
-    def padded(self, target_length):
+    def padded(self, target_length: int):
         delta = target_length - self.length
         total_length = self.tensor.shape[-1]
         assert delta >= 0
@@ -132,7 +149,7 @@ class TensorChunk:
         pad_left = correct_start - start
         pad_right = end - correct_end
 
-        out = F.pad(self.tensor[..., correct_start:correct_end], (pad_left, pad_right))
+        out = F.pad(self.tensor[..., correct_start:correct_end], [int(pad_left), int(pad_right)])
         assert out.shape[-1] == target_length
         return out
 

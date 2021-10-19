@@ -8,8 +8,9 @@ import math
 
 import julius
 from torch import nn
+import torch
 
-from .utils import capture_init, center_trim
+from .utils import capture_init, center_trim, center_trim_tensor
 
 
 class BLSTM(nn.Module):
@@ -142,7 +143,7 @@ class Demucs(nn.Module):
         if rescale:
             rescale_module(self, reference=rescale)
 
-    def valid_length(self, length):
+    def valid_length(self, length: int) -> int:
         """
         Return the nearest valid length to use with the model so that
         there is no time steps left over in a convolutions, e.g. for all
@@ -155,8 +156,8 @@ class Demucs(nn.Module):
         For training, extracts should have a valid length.For evaluation
         on full tracks we recommend passing `pad = True` to :method:`forward`.
         """
-        if self.resample:
-            length *= 2
+        # if self.resample:
+        #     length *= 2
         for _ in range(self.depth):
             length = math.ceil((length - self.kernel_size) / self.stride) + 1
             length = max(1, length)
@@ -164,8 +165,8 @@ class Demucs(nn.Module):
         for _ in range(self.depth):
             length = (length - 1) * self.stride + self.kernel_size
 
-        if self.resample:
-            length = math.ceil(length / 2)
+        # if self.resample:
+        #     length = math.ceil(length / 2)
         return int(length)
 
     def forward(self, mix):
@@ -176,27 +177,27 @@ class Demucs(nn.Module):
             mean = mono.mean(dim=-1, keepdim=True)
             std = mono.std(dim=-1, keepdim=True)
         else:
-            mean = 0
-            std = 1
+            mean = torch.tensor(0)
+            std = torch.tensor(1)
 
         x = (x - mean) / (1e-5 + std)
 
-        if self.resample:
-            x = julius.resample_frac(x, 1, 2)
+        # if self.resample:
+        #     x = julius.resample_frac(x, 1, 2)
 
         saved = []
         for encode in self.encoder:
             x = encode(x)
             saved.append(x)
-        if self.lstm:
+        if hasattr(self, 'lstm'):
             x = self.lstm(x)
         for decode in self.decoder:
-            skip = center_trim(saved.pop(-1), x)
+            skip = center_trim_tensor(saved.pop(-1), x)
             x = x + skip
             x = decode(x)
 
-        if self.resample:
-            x = julius.resample_frac(x, 2, 1)
+        # if self.resample:
+        #     x = julius.resample_frac(x, 2, 1)
         x = x * std + mean
         x = x.view(x.size(0), len(self.sources), self.audio_channels, x.size(-1))
         return x

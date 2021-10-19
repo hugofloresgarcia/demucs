@@ -8,7 +8,6 @@ import argparse
 import sys
 from pathlib import Path
 import subprocess
-
 import julius
 import torch as th
 import torchaudio as ta
@@ -73,6 +72,85 @@ def encode_mp3(wav, path, bitrate=320, samplerate=44100, channels=2, verbose=Fal
     with open(path, "wb") as f:
         f.write(mp3_data)
 
+def serialize(model, save_path):
+    from .utils import tensor_chunk, center_trim
+    from torch import nn
+    from torchaudacity import WaveformToWaveform
+
+    model.to('cpu')
+    model.eval()
+    print(f'RESAMPLE: {model.resample}')
+    class DemucsWrapper(WaveformToWaveform):
+
+        def __init__(self, model):
+            super().__init__(model)
+            remove_attributes = []
+            for key, value in vars(model).items():
+                if value is None:
+                    remove_attributes.append(key)
+
+            for key in remove_attributes:
+                delattr(model, key)
+
+            self.model = model
+
+        def do_forward_pass(self, x):
+            x = convert_audio_channels(x, self.model.audio_channels)
+            # pre
+            ref = x.mean(0)
+            x = (x - ref.mean()) / ref.std()
+
+            # forward
+            device = x.device
+            channels, length = x.shape
+            valid_length: int = self.model.valid_length(int(length))
+            mix = tensor_chunk(x)
+            padded_mix = mix.padded(valid_length)
+            with th.no_grad():
+                out = self.model(padded_mix.unsqueeze(0))[0]
+            out = center_trim(out, length)
+            
+            sources = out
+            # post
+            sources = sources * ref.std() + ref.mean()
+
+
+            x = center_trim(sources, length)
+
+            # sum them back up into mono sources
+            x = x.mean(1, keepdim=False)
+            print(x.shape)
+            return x
+
+    wrapper = DemucsWrapper(model)
+
+    example_inputs = [
+        th.randn(1, int(48000 * n))
+        for n in [1, 0.3, 0.5, 0.75, 1.3, 2, 4, 5.2, 6]
+    ]
+    
+    serialized_model = th.jit.script(wrapper)
+    th.jit.trace(serialized_model, example_inputs[0], check_inputs=example_inputs)
+
+    print(serialized_model(example_inputs[0]).shape)
+
+    save_path.parent.mkdir(exist_ok=True, parents=True)
+    th.jit.save(serialized_model, save_path)
+
+    import json
+    with open(save_path.parent / 'audacity-metadata.json', 'w') as f:
+        json.dump({
+            'sample_rate': int(model.samplerate), 
+            'domain_tags': ['music'],
+            'short_description': 'Use me for separating musical instruments! Separates into Drums, Bass, Vocals, and Other.',
+            'long_description':  f'This is the Demucs model ({save_path.stem}), serialized from facebookresearch\'s repository.',
+            'tags': ['music', 'musdb'],
+            'labels': ['drums', 'bass', 'vocals', 'other'],
+            'effect_type': 'waveform-to-waveform',
+            'multichannel': True,
+        }, f)
+
+    print(save_path)
 
 def main():
     parser = argparse.ArgumentParser("demucs.separate",
@@ -142,6 +220,10 @@ def main():
             print(f"No pre-trained model {args.name}", file=sys.stderr)
             sys.exit(1)
     model.to(args.device)
+
+    print(f'tracing to torchscript')
+    serialize(model, args.out / (str(args.name) +  '-audacity.pt'))
+    print(f'done tracing :)')
 
     out = args.out / args.name
     out.mkdir(parents=True, exist_ok=True)
